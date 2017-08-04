@@ -11,7 +11,7 @@ setup (
     keywords = ['ligo', 'physics', 'gravity', 'deep learning', 'astronomy',
                 'gravitational waves', 'machine learning'],
     install_requires = ['pycbc', 'keras', 'tensorflow'],
-    scripts  = [
+    scripts  = ['bin/gmind_test',
                ],
     packages = ['gmind'
                ],

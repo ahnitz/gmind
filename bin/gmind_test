@@ -1,0 +1,113 @@
+from keras.preprocessing.image import ImageDataGenerator
+from keras.models import Sequential
+from keras.layers import Conv2D, MaxPooling2D
+from keras.layers import Activation, Dropout, Flatten, Dense
+import numpy.random
+import pycbc.noise
+import pycbc.psd
+import pycbc.waveform
+import pycbc.filter
+from multiprocessing import Pool
+
+# Define metric based on FAR above threshold approach at interesting FAR.
+
+def part((seed, psd, fl)):
+    fs = pycbc.noise.frequency_noise_from_psd(psd, seed=seed)
+
+    # We alternate a noise sample and a signal sample
+    sw = seed % 2
+    if sw==1:
+        snr = numpy.random.uniform(7, 10)
+        dt = numpy.random.uniform(-.030, .030)
+        m1 = numpy.random.uniform(10, 30)
+        m2 = numpy.random.uniform(10, 50)
+        phase = numpy.random.uniform(-numpy.pi, numpy.pi)
+        hp, hc = pycbc.waveform.get_fd_waveform(approximant="IMRPhenomD", 
+                                    coa_phase=phase,
+                                    mass1=m1, mass2=m2, distance=1,
+                                    f_lower=20, delta_f=fs.delta_f)
+        hp.resize(len(fs))
+        hp *= snr / pycbc.filter.sigma(hp, psd=psd, 
+                        low_frequency_cutoff=fl)
+        fs += hp.cyclic_time_shift(fs.duration / 2 + dt)
+
+    t, f, p = fs.to_timeseries().whiten(2, 2).qtransform(.002, 1, 
+                                    frange=(20, 300),
+                                    qrange=(15, 15))
+    s = slice(len(t)/2 - 200, len(t)/2 + 50)
+    p = p[:,s]
+    #import pylab
+    #pylab.pcolormesh(t[s], f, p)
+    #pylab.savefig('figs/%s.png' % seed)
+    #return p, sw
+
+    
+pool = Pool(20)
+
+class test_gen(object):
+    def __init__(self):
+        bl = 16
+        sr = 1024
+        tlen = bl * sr
+        flen = tlen / 2 + 1
+        self.fl = 20.0
+        df = 1.0 / bl
+        self.psd = pycbc.psd.aLIGOZeroDetLowPower(flen, df, self.fl)
+        self.seed = 0
+        self.batch = 100
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        self.seed += self.batch
+
+        seeds = numpy.arange(self.seed, self.seed + self.batch, 1)
+        data = pool.map(part, [(s, self.psd, self.fl) for s in seeds])            
+
+        inputs = [d[0] for d in data]
+        targets = [d[1] for d in data]
+
+        return numpy.array(inputs).reshape(self.batch, 250, 280, 1), numpy.array(targets)
+
+
+# dimensions of our images.
+img_width, img_height = 250, 280
+input_shape = (img_width, img_height, 1)
+ 
+model = Sequential()
+model.add(Conv2D(32, (3, 3), input_shape=input_shape))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+
+model.add(Conv2D(32, (3, 3)))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+
+model.add(Conv2D(32, (3, 3)))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+
+model.add(Conv2D(32, (3, 3)))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+
+model.add(Conv2D(64, (3, 3)))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+
+model.add(Flatten())
+model.add(Dense(64))
+model.add(Activation('relu'))
+model.add(Dropout(0.5))
+model.add(Dense(1))
+model.add(Activation('sigmoid'))
+
+#model.load_weights('test.hdf')
+model.compile(loss='binary_crossentropy',
+              optimizer='rmsprop',
+              metrics=['accuracy'])
+
+model.fit_generator(test_gen(), 2, epochs=5)
+model.save('test.hdf')
+
