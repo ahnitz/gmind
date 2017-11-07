@@ -1,3 +1,4 @@
+#!/usr/env python
 from keras.preprocessing.image import ImageDataGenerator
 from keras.models import Sequential
 from keras.layers import Conv2D, MaxPooling2D
@@ -15,34 +16,33 @@ def part((seed, psd, fl)):
     fs = pycbc.noise.frequency_noise_from_psd(psd, seed=seed)
 
     # We alternate a noise sample and a signal sample
-    sw = seed % 2
-    if sw==1:
-        snr = numpy.random.uniform(7, 10)
-        dt = numpy.random.uniform(-.030, .030)
-        m1 = numpy.random.uniform(10, 30)
-        m2 = numpy.random.uniform(10, 50)
-        phase = numpy.random.uniform(-numpy.pi, numpy.pi)
-        hp, hc = pycbc.waveform.get_fd_waveform(approximant="IMRPhenomD", 
-                                    coa_phase=phase,
-                                    mass1=m1, mass2=m2, distance=1,
-                                    f_lower=20, delta_f=fs.delta_f)
-        hp.resize(len(fs))
-        hp *= snr / pycbc.filter.sigma(hp, psd=psd, 
-                        low_frequency_cutoff=fl)
-        fs += hp.cyclic_time_shift(fs.duration / 2 + dt)
+    snr = numpy.random.uniform(7, 25)
+    dt = numpy.random.uniform(-.1, .1)
+    m1 = numpy.random.uniform(10, 40)
+    m2 = numpy.random.uniform(10, 40)
+    phase = numpy.random.uniform(-numpy.pi, numpy.pi)
+    hp, hc = pycbc.waveform.get_fd_waveform(approximant="IMRPhenomD", 
+                                coa_phase=phase,
+                                mass1=m1, mass2=m2, distance=1,
+                                f_lower=20, delta_f=fs.delta_f)
 
-    t, f, p = fs.to_timeseries().whiten(2, 2).qtransform(.002, 1, 
+    hp.resize(len(fs))
+    hp *= snr / pycbc.filter.sigma(hp, psd=psd, 
+                    low_frequency_cutoff=fl)
+    fs += hp.cyclic_time_shift(fs.duration / 2 + dt)
+
+    msnr = pycbc.filter.matched_filter(hp, fs, psd=psd, low_frequency_cutoff=20)
+    msnr = abs(msnr).time_slice(fs.duration /2 + dt -.05, fs.duration/2 +dt +.05).max()
+
+    t, f, p = fs.to_timeseries().whiten(2, 2).qtransform(.005, logfsteps=100, 
                                     frange=(20, 300),
-                                    qrange=(15, 15))
-    s = slice(len(t)/2 - 200, len(t)/2 + 50)
-    p = p[:,s]
-    #import pylab
-    #pylab.pcolormesh(t[s], f, p)
-    #pylab.savefig('figs/%s.png' % seed)
-    #return p, sw
+                                    qrange=(15, 15), return_complex=True)
+    s = slice(len(t)/2 - 170, len(t)/2 + 30)
+    p = numpy.array([p[:,s].real, p[:,s].imag])
+    return p, (msnr, dt, m1, m2)
 
     
-pool = Pool(20)
+pool = Pool(4)
 
 class test_gen(object):
     def __init__(self):
@@ -54,7 +54,7 @@ class test_gen(object):
         df = 1.0 / bl
         self.psd = pycbc.psd.aLIGOZeroDetLowPower(flen, df, self.fl)
         self.seed = 0
-        self.batch = 100
+        self.batch = 20
 
     def __iter__(self):
         return self
@@ -68,12 +68,12 @@ class test_gen(object):
         inputs = [d[0] for d in data]
         targets = [d[1] for d in data]
 
-        return numpy.array(inputs).reshape(self.batch, 250, 280, 1), numpy.array(targets)
+        return numpy.array(inputs).reshape(self.batch, 200, 100, 2), numpy.array(targets)
 
 
 # dimensions of our images.
-img_width, img_height = 250, 280
-input_shape = (img_width, img_height, 1)
+img_width, img_height = 200, 100
+input_shape = (img_width, img_height, 2)
  
 model = Sequential()
 model.add(Conv2D(32, (3, 3), input_shape=input_shape))
@@ -100,14 +100,39 @@ model.add(Flatten())
 model.add(Dense(64))
 model.add(Activation('relu'))
 model.add(Dropout(0.5))
-model.add(Dense(1))
-model.add(Activation('sigmoid'))
+model.add(Dense(4))
 
-#model.load_weights('test.hdf')
-model.compile(loss='binary_crossentropy',
-              optimizer='rmsprop',
+test = False
+retrain = True
+if test or retrain:
+    model.load_weights('test.hdf')
+
+
+model.compile(loss='mean_squared_error',
+              optimizer='adagrad',
               metrics=['accuracy'])
 
-model.fit_generator(test_gen(), 2, epochs=5)
-model.save('test.hdf')
+if test:
+    g = test_gen()
+    s, t = g.next()
+    snr, time, m1, m2 = t[:,0], t[:,1], t[:,2], t[:,3]    
+    p = model.predict(s, 1)
+    psnr, ptime, pm1, pm2 = p[:,0], p[:,1], p[:,2], p[:,3]    
+    import pylab
+    pylab.figure(1)
+    pylab.scatter(snr, psnr, c=m1+m2)
+    pylab.colorbar()
+
+    pylab.figure(2)
+    pylab.scatter(m1+m2, pm1+pm2, c=snr)
+    pylab.colorbar()
+
+    pylab.figure(3)
+    pylab.scatter(time, ptime, c=m1+m2)
+    pylab.colorbar()
+    pylab.show()
+
+if not test:
+    model.fit_generator(test_gen(), 5, epochs=5)
+    model.save('test.hdf')
 
