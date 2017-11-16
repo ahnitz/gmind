@@ -1,11 +1,21 @@
 """ This module contains classes and tools to generate time series and images
 containing noise and or signals
 """
-import numpy
+import numpy.random
 
 from pycbc.noise import frequency_noise_from_psd
 from scipy.interpolate import interp1d
 from pycbc.types import FrequencySeries
+
+from pycbc.inference.option_utils import read_args_from_config
+from pycbc.distributions import read_distributions_from_config
+from pycbc.transforms import read_transforms_from_config, apply_transforms
+from pycbc.inference import prior
+
+from pycbc.workflow import WorkflowConfigParser
+
+from pycbc.waveform import get_fd_waveform
+from pycbc.filter import sigma
 
 class GaussianNoiseGenerator(object):
     def __init__(self, buffer_duration, sample_rate, psd, flow, output_type='frequency', seed=0):
@@ -20,10 +30,11 @@ class GaussianNoiseGenerator(object):
         flen = tlen / 2 + 1
         psd = psd.copy()
 
+        print len(psd), flen
         if flen < len(psd):
             psd.resize(flen)
         else:
-            raise ValueError("PSD does not have content at high enough"
+            raise ValueError("PSD does not have content at high enough "
                              "frequency for this sample rate")
 
         flog = numpy.log(psd.sample_frequencies.numpy())
@@ -41,10 +52,68 @@ class GaussianNoiseGenerator(object):
         self.psd[len(self.psd)-1] = 0
 
     def frequency(self):
-        print self.current_seed
         return frequency_noise_from_psd(self.psd, seed=self.current_seed)
         
     def next(self):
         self.current_seed += 1
         if self.type == 'frequency':
             return self.frequency()
+
+class WFParamGenerator(object):
+    def __init__(self, config_file, seed=0):
+        numpy.random.seed(seed)
+        config_file = WorkflowConfigParser(config_file, None)
+        var_args, self.static, constraints = read_args_from_config(config_file)
+        dist = read_distributions_from_config(config_file)
+
+        self.trans = read_transforms_from_config(config_file)
+        self.pval = prior.PriorEvaluator(var_args, *dist, 
+                                **{"constraints": constraints})   
+
+    def draw(self):
+        return apply_transforms(self.pval.rvs(), self.trans)[0]
+
+# This should have more options for output format and qtile configuration
+class GaussianSignalQImageGenerator(object):
+    def __init__(self, noise_generator, param_generator, duration, image_dim, whitening_truncation=4, q=10):
+        self.noise = noise_generator
+        self.param = param_generator
+        self.image_dim = image_dim
+        self.whitening_truncation = whitening_truncation
+        self.window = 0.5
+        self.q = q
+        self.duration = duration
+
+    def next(self):
+        n = self.noise.next()
+        p = self.param.draw()
+        hp, _ = get_fd_waveform(p, delta_f=n.delta_f,
+                                f_lower=self.noise.flow, **self.param.static)
+        hp.resize(len(n))
+        sg = sigma(hp, psd=self.noise.psd, low_frequency_cutoff=self.noise.flow)
+        n += hp.cyclic_time_shift(p.tc) / sg * p.snr
+        
+        n = n.to_timeseries()
+        w = n.whiten(self.whitening_truncation, self.whitening_truncation)
+
+        dt = self.duration / float(self.image_dim[0])
+        fhigh = self.noise.sample_rate * 0.4
+        t, f, p = w.qtransform(dt, logfsteps=self.image_dim[1],
+                                   frange=(self.noise.flow, fhigh),
+                                   qrange=(self.q, self.q),
+                                   return_complex=True)
+
+        kmin = int((w.duration / 2 - self.duration / 2) / dt)
+        kmax = kmin + int(self.duration / dt)
+        p = p[:, kmin:kmax].transpose()
+        
+        amp = numpy.abs(p)
+        p = numpy.stack([p.real, p.imag, amp], axis=2)
+        return p
+
+
+
+
+
+
+
