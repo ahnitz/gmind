@@ -15,7 +15,7 @@ from pycbc.inference import prior
 from pycbc.workflow import WorkflowConfigParser
 
 from pycbc.waveform import get_fd_waveform
-from pycbc.filter import sigma
+from pycbc.filter import sigma, matched_filter
 
 class GaussianNoiseGenerator(object):
     def __init__(self, buffer_duration, sample_rate, psd, flow, output_type='frequency', seed=0):
@@ -74,7 +74,8 @@ class WFParamGenerator(object):
 
 # This should have more options for output format and qtile configuration
 class GaussianSignalQImageGenerator(object):
-    def __init__(self, noise_generator, param_generator, duration, image_dim, whitening_truncation=4, q=10):
+    def __init__(self, noise_generator, param_generator, duration, image_dim,
+                 whitening_truncation=4, q=10, batch=10):
         self.noise = noise_generator
         self.param = param_generator
         self.image_dim = image_dim
@@ -82,33 +83,45 @@ class GaussianSignalQImageGenerator(object):
         self.window = 0.5
         self.q = q
         self.duration = duration
+        self.batch = batch
 
     def next(self):
-        n = self.noise.next()
-        p = self.param.draw()
-        hp, _ = get_fd_waveform(p, delta_f=n.delta_f,
-                                f_lower=self.noise.flow, **self.param.static)
-        hp.resize(len(n))
-        sg = sigma(hp, psd=self.noise.psd, low_frequency_cutoff=self.noise.flow)
-        n += hp.cyclic_time_shift(p.tc) / sg * p.snr
-        
-        n = n.to_timeseries()
-        w = n.whiten(self.whitening_truncation, self.whitening_truncation)
+        images = []
+        targets = []
+        for i in range(self.batch):
+            n = self.noise.next()
+            p = self.param.draw()
+            hp, _ = get_fd_waveform(p, delta_f=n.delta_f,
+                                    f_lower=self.noise.flow, **self.param.static)
+            hp.resize(len(n))
+            sg = sigma(hp, psd=self.noise.psd, low_frequency_cutoff=self.noise.flow)
+            n += hp.cyclic_time_shift(p.tc) / sg * p.snr
+            
+            msnr = matched_filter(hp, n, psd=self.noise.psd,
+                                  low_frequency_cutoff=self.noise.flow)
+            snr = abs(msnr.crop(self.whitening_truncation,
+                                self.whitening_truncation)).max()
 
-        dt = self.duration / float(self.image_dim[0])
-        fhigh = self.noise.sample_rate * 0.4
-        t, f, p = w.qtransform(dt, logfsteps=self.image_dim[1],
-                                   frange=(self.noise.flow, fhigh),
-                                   qrange=(self.q, self.q),
-                                   return_complex=True)
+            n = n.to_timeseries()
+            w = n.whiten(self.whitening_truncation, self.whitening_truncation)
 
-        kmin = int((w.duration / 2 - self.duration / 2) / dt)
-        kmax = kmin + int(self.duration / dt)
-        p = p[:, kmin:kmax].transpose()
+            dt = self.duration / float(self.image_dim[0])
+            fhigh = self.noise.sample_rate * 0.3
+            t, f, p = w.qtransform(dt, logfsteps=self.image_dim[1],
+                                       frange=(self.noise.flow, fhigh),
+                                       qrange=(self.q, self.q),
+                                       return_complex=True)
+
+            kmin = int((w.duration / 2 - self.duration / 2) / dt)
+            kmax = kmin + int(self.duration / dt)
+            p = p[:, kmin:kmax].transpose()
+            
+            amp = numpy.abs(p)
+            p = numpy.stack([p.real, p.imag, amp], axis=2)
+            images.append(p)
+            targets.append(snr)
         
-        amp = numpy.abs(p)
-        p = numpy.stack([p.real, p.imag, amp], axis=2)
-        return p
+        return numpy.stack(images, axis=0), numpy.array(targets)
 
 
 
