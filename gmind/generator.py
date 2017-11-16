@@ -30,7 +30,6 @@ class GaussianNoiseGenerator(object):
         flen = tlen / 2 + 1
         psd = psd.copy()
 
-        print len(psd), flen
         if flen < len(psd):
             psd.resize(flen)
         else:
