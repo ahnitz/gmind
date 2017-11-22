@@ -73,6 +73,46 @@ class WFParamGenerator(object):
         return apply_transforms(self.pval.rvs(), self.trans)[0]
 
 # This should have more options for output format and qtile configuration
+class GaussianSignalTimeGenerator(object):
+    def __init__(self, noise_generator, param_generator, duration,
+                 whitening_truncation=4, q=10, batch=10):
+        self.noise = noise_generator
+        self.param = param_generator
+        self.whitening_truncation = whitening_truncation
+        self.window = 0.5
+        self.q = q
+        self.duration = duration
+        self.batch = batch
+
+    def next(self):
+        wseries = []
+        targets = []
+        for i in range(self.batch):
+            n = self.noise.next()
+            p = self.param.draw()
+            hp, _ = get_fd_waveform(p, delta_f=n.delta_f,
+                                    f_lower=self.noise.flow, **self.param.static)
+            hp.resize(len(n))
+            sg = sigma(hp, psd=self.noise.psd, low_frequency_cutoff=self.noise.flow)
+            n += hp.cyclic_time_shift(p.tc) / sg * p.snr
+            
+            msnr = matched_filter(hp, n, psd=self.noise.psd,
+                                  low_frequency_cutoff=self.noise.flow)
+
+            snr = abs(msnr.crop(self.whitening_truncation,
+                                self.whitening_truncation)).max()
+
+            n = n.to_timeseries()
+            w = n.whiten(self.whitening_truncation, self.whitening_truncation)
+            mid = w.duration / 2 + w.start_time
+            w = w.time_slice(mid + self.duration[0], mid + self.duration[1])
+
+            wseries.append(w.numpy())
+            targets.append(snr)
+        
+        return numpy.stack(wseries).reshape(self.batch, len(w), 1), numpy.array(targets)
+
+# This should have more options for output format and qtile configuration
 class GaussianSignalQImageGenerator(object):
     def __init__(self, noise_generator, param_generator, duration, image_dim,
                  whitening_truncation=4, q=10, batch=10):
@@ -80,7 +120,6 @@ class GaussianSignalQImageGenerator(object):
         self.param = param_generator
         self.image_dim = image_dim
         self.whitening_truncation = whitening_truncation
-        self.window = 0.5
         self.q = q
         self.duration = duration
         self.batch = batch
