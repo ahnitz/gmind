@@ -4,11 +4,26 @@ import pycbc.psd
 import gmind.generator
 import matplotlib
 matplotlib.use('Agg')
+import pylab, numpy
 
-p = pycbc.psd.aLIGOZeroDetHighPower(2**19, 1.0/16, 15)
-s = gmind.generator.GaussianNoiseGenerator(32, 1024, p, 20)
-p = gmind.generator.WFParamGenerator(["examples/test.ini"])
-g = w = gmind.generator.GaussianSignalTimeGenerator(s, p, [-3, 1], batch=50)
+class flow_from_file(object):
+    def __init__(self, fname):
+        self.file = h5py.File(fname, 'r')
+        self.data = self.file['data']
+        self.targets = self.file['target']
+        self.i = 0
+        self.num_batches = len(self.data)
+
+    def next(self):
+        print self.i, self.num_batches
+        d = self.data[str(self.i)][:]
+        t = self.targets[str(self.i)][:]
+        self.i += 1
+        if self.i == self.num_batches:
+            self.i = 0
+
+        return d, t
+g = flow_from_file('pregen.hdf')
 
 # dimensions of our images.
 width = 1024 * 4
@@ -16,19 +31,18 @@ width = 1024 * 4
 model = Sequential()
 model.add(Conv1D(32, 3, input_shape=(width, 1), padding='causal'))
 
-for i in range(6):
-    model.add(Conv1D(32, 8, padding='causal'))
+for i in range(1):
+    model.add(Conv1D(32, 3, padding='causal'))
 
-for i in range(6):
+for i in range(5):
     model.add(Conv1D(32, 3, padding='causal'))
     model.add(MaxPooling1D(2))
 
 model.add(Flatten())
-model.add(Dense(128))
-model.add(Dense(16))
+model.add(Dense(32))
 model.add(Dense(1))
 
-retrain = True
+retrain = False
 if retrain:
     model.load_weights('test.hdf')
 
@@ -37,25 +51,18 @@ model.compile(loss='mean_squared_error',
               metrics=['accuracy'])
 
 i = 0
+d, t = g.next()
 while 1:
-    #FIT ME
-    d, t = g.next()
-    model.fit(d, t, batch_size=g.batch, epochs=100)
+    model.fit_generator(g, steps_per_epoch=g.num_batches, epochs=1)
     model.save('test.hdf')
-    
-    #TESTS I UNDERSTAND
-    s, t = g.next()
-    p = model.predict(s, 1)
-    
-    ms = (t - p)**2.0
-    print i, ms.mean(), ms.max(), p.min(), p.max()
-    
-    import pylab
+
+    p = model.predict(d)
+
     pylab.figure()
-    pylab.scatter(t, p)
-    pylab.xlim(4, 20)
-    pylab.ylim(4, 20)
+    pylab.scatter(t, p, label='Testing')
+    pylab.legend()
+    pylab.xlim(1, 25)
+    pylab.ylim(1, 25)
     pylab.savefig('iter-%s.png' % i)
     pylab.close('all')
     i += 1
-
