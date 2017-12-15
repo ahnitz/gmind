@@ -31,23 +31,27 @@ width = 1024 * 4
 model = Sequential()
 model.add(Conv1D(32, 3, input_shape=(width, 1), padding='causal'))
 
-for i in range(1):
+for i in range(3):
     model.add(Conv1D(32, 3, padding='causal'))
 
-for i in range(5):
+for i in range(3):
     model.add(Conv1D(32, 3, padding='causal'))
     model.add(MaxPooling1D(2))
 
 model.add(Flatten())
 model.add(Dense(32))
-model.add(Dense(1))
+model.add(Dropout(0.5))
+model.add(Dense(32))
+model.add(Dropout(0.5))
+model.add(Dense(32))
+model.add(Dense(5))
 
 retrain = False
 if retrain:
     model.load_weights('test.hdf')
 
 model.compile(loss='mean_squared_error',
-              optimizer='nadam',
+              optimizer='adagrad',
               metrics=['accuracy'])
 
 i = 0
@@ -59,7 +63,7 @@ while 1:
     p = model.predict(d)
 
     pylab.figure()
-    pylab.scatter(t, p, label='Testing')
+    pylab.scatter(t[:,0], p[:,0], label='Testing')
     pylab.legend()
     pylab.xlim(1, 25)
     pylab.ylim(1, 25)

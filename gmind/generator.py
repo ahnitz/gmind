@@ -1,7 +1,7 @@
 """ This module contains classes and tools to generate time series and images
 containing noise and or signals
 """
-import numpy.random
+import numpy.random, pycbc
 
 from pycbc.noise import frequency_noise_from_psd
 from scipy.interpolate import interp1d
@@ -73,21 +73,28 @@ class WFParamGenerator(object):
         return apply_transforms(self.pval.rvs(), self.trans)[0]
 
 # This should have more options for output format and qtile configuration
-class GaussianSignalTimeGenerator(object):
-    def __init__(self, noise_generator, param_generator, duration,
-                 whitening_truncation=4, q=10, batch=10):
+
+class GaussianSignalGenerator(object):
+    def __init__(self, noise_generator, param_generator, duration, batch=10):
         self.noise = noise_generator
         self.param = param_generator
-        self.whitening_truncation = whitening_truncation
-        self.window = 0.5
-        self.q = q
         self.duration = duration
         self.batch = batch
+    
+        self.target_type = ['snr']
+        self.current_params = None
+
+    def target(self, batch_params):
+        targets = []
+        for p in batch_params:
+            targets.append([p[k] for k in self.target_type])
+        return numpy.array(targets)
 
     def next(self):
-        wseries = []
-        targets = []
+        nseries = []
+        stats = []
         for i in range(self.batch):
+            stat = {}
             n = self.noise.next()
             p = self.param.draw()
             hp, _ = get_fd_waveform(p, delta_f=n.delta_f,
@@ -95,22 +102,75 @@ class GaussianSignalTimeGenerator(object):
             hp.resize(len(n))
             sg = sigma(hp, psd=self.noise.psd, low_frequency_cutoff=self.noise.flow)
             n += hp.cyclic_time_shift(p.tc) / sg * p.snr
-            
+
+            # Collect some standard stats we might want
             msnr = matched_filter(hp, n, psd=self.noise.psd,
                                   low_frequency_cutoff=self.noise.flow)
+            msnr = msnr.time_slice(p.tc - 1, p.tc + 1)       
+            
+            params = {k: p[k] for k in p.dtype.names}
+            idx = msnr.abs_arg_max()
+            csnr = msnr[idx]
+            params['csnr'] = csnr
+            params['rsnr'] = csnr.real
+            params['isnr'] = csnr.imag
+            params['snr'] = abs(csnr)
+            params['time'] = float(msnr.start_time + idx * msnr.delta_t)
 
-            snr = abs(msnr.crop(self.whitening_truncation,
-                                self.whitening_truncation)).max()
+            nseries.append(n)
+            stats.append(params)
+
+        self.current_params = stats
+        return nseries, self.current_params
+
+class OWGaussianSignalTimeGenerator(GaussianSignalGenerator):
+    def __init__(self, noise_generator, param_generator, duration,
+                 whitening_truncation=4, q=10, batch=10):
+        super(OWGaussianSignalTimeGenerator, self).__init__(noise_generator,
+                                  param_generator, duration, batch=batch)
+        self.whitening_truncation = whitening_truncation
+        self.q = q
+
+    def next(self):
+        data, params = super(OWGaussianSignalTimeGenerator, self).next()
+
+        wseries = []
+        for i in range(self.batch):
+            n = (data[i] / (self.noise.psd * pycbc.DYN_RANGE_FAC**2.0))
+            n[0:int(self.noise.flow/n.delta_f)] = 0
+            n[len(n)-1] = 0
+
+            print n.real().max(), n.imag().max()
 
             n = n.to_timeseries()
+            w = n.crop(self.whitening_truncation, self.whitening_truncation)
+            mid = w.duration / 2 + w.start_time
+            w = w.time_slice(mid + self.duration[0], mid + self.duration[1])
+            wseries.append(w.numpy())
+            print w.max()
+        
+        return numpy.stack(wseries).reshape(self.batch, len(w), 1), self.target(params)
+
+class GaussianSignalTimeGenerator(GaussianSignalGenerator):
+    def __init__(self, noise_generator, param_generator, duration,
+                 whitening_truncation=4, q=10, batch=10):
+        super(GaussianSignalTimeGenerator, self).__init__(noise_generator,
+                                  param_generator, duration, batch=batch)
+        self.whitening_truncation = whitening_truncation
+        self.q = q
+
+    def next(self):
+        data, params = super(GaussianSignalTimeGenerator, self).next()
+
+        wseries = []
+        for i in range(self.batch):
+            n = data[i].to_timeseries()
             w = n.whiten(self.whitening_truncation, self.whitening_truncation)
             mid = w.duration / 2 + w.start_time
             w = w.time_slice(mid + self.duration[0], mid + self.duration[1])
-
             wseries.append(w.numpy())
-            targets.append(snr)
         
-        return numpy.stack(wseries).reshape(self.batch, len(w), 1), numpy.array(targets)
+        return numpy.stack(wseries).reshape(self.batch, len(w), 1), self.target(params)
 
 # This should have more options for output format and qtile configuration
 class GaussianSignalQImageGenerator(object):
