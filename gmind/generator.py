@@ -8,9 +8,8 @@ from scipy.interpolate import interp1d
 from pycbc.types import FrequencySeries
 
 from pycbc.inference.option_utils import read_args_from_config
-from pycbc.distributions import read_distributions_from_config
+from pycbc.distributions import read_distributions_from_config, JointDistribution
 from pycbc.transforms import read_transforms_from_config, apply_transforms
-from pycbc.inference import prior
 
 from pycbc.workflow import WorkflowConfigParser
 
@@ -66,7 +65,7 @@ class WFParamGenerator(object):
         dist = read_distributions_from_config(config_file)
 
         self.trans = read_transforms_from_config(config_file)
-        self.pval = prior.PriorEvaluator(var_args, *dist, 
+        self.pval = JointDistribution(var_args, *dist, 
                                 **{"constraints": constraints})   
 
     def draw(self):
