@@ -14,7 +14,26 @@ from pycbc.transforms import read_transforms_from_config, apply_transforms
 from pycbc.workflow import WorkflowConfigParser
 
 from pycbc.waveform import get_fd_waveform
-from pycbc.filter import sigma, matched_filter
+from pycbc.filter import sigma, matched_filter, resample_to_delta_t
+
+from pycbc.frame import query_and_read_frame
+
+class LIGONoiseGenerator(object):
+    def __init__(self, times, buffer_duration, sample_rate, frame_type, channel):
+        self.times = times
+        self.duration = buffer_duration
+        self.sample_rate = sample_rate
+        self.frame_type = frame_type
+        self.channel = channel
+        self.index = 0
+
+    def next():
+        start = self.times[self.index] - self.duration / 2
+        end = self.times[self.index] + self.duration / 2
+        ts = query_and_read_frame(self.frame_type, self.channel, start, end)
+        ts = resample_to_delta_t(ts, 1.0/self.sample_rate)
+        self.index += 1
+        return ts.to_frequencyseries()
 
 class GaussianNoiseGenerator(object):
     def __init__(self, buffer_duration, sample_rate, psd, flow, output_type='frequency', seed=0):
@@ -73,7 +92,7 @@ class WFParamGenerator(object):
 
 # This should have more options for output format and qtile configuration
 
-class GaussianSignalGenerator(object):
+class NoiseSignalGenerator(object):
     def __init__(self, noise_generator, param_generator, duration, batch=10):
         self.noise = noise_generator
         self.param = param_generator
@@ -122,41 +141,12 @@ class GaussianSignalGenerator(object):
         self.current_params = stats
         return nseries, self.current_params
 
-class OWGaussianSignalTimeGenerator(GaussianSignalGenerator):
+class SignalTimeGenerator(NoiseSignalGenerator):
     def __init__(self, noise_generator, param_generator, duration,
-                 whitening_truncation=4, q=10, batch=10):
-        super(OWGaussianSignalTimeGenerator, self).__init__(noise_generator,
-                                  param_generator, duration, batch=batch)
-        self.whitening_truncation = whitening_truncation
-        self.q = q
-
-    def next(self):
-        data, params = super(OWGaussianSignalTimeGenerator, self).next()
-
-        wseries = []
-        for i in range(self.batch):
-            n = (data[i] / (self.noise.psd * pycbc.DYN_RANGE_FAC**2.0))
-            n[0:int(self.noise.flow/n.delta_f)] = 0
-            n[len(n)-1] = 0
-
-            print n.real().max(), n.imag().max()
-
-            n = n.to_timeseries()
-            w = n.crop(self.whitening_truncation, self.whitening_truncation)
-            mid = w.duration / 2 + w.start_time
-            w = w.time_slice(mid + self.duration[0], mid + self.duration[1])
-            wseries.append(w.numpy())
-            print w.max()
-        
-        return numpy.stack(wseries).reshape(self.batch, len(w), 1), self.target(params)
-
-class GaussianSignalTimeGenerator(GaussianSignalGenerator):
-    def __init__(self, noise_generator, param_generator, duration,
-                 whitening_truncation=4, q=10, batch=10):
+                 whitening_truncation=4, batch=10):
         super(GaussianSignalTimeGenerator, self).__init__(noise_generator,
                                   param_generator, duration, batch=batch)
         self.whitening_truncation = whitening_truncation
-        self.q = q
 
     def next(self):
         data, params = super(GaussianSignalTimeGenerator, self).next()
